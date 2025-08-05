@@ -1,0 +1,119 @@
+import os
+import shutil
+import time
+import getpass
+from Crypto.Cipher import AES
+from Crypto.Random import get_random_bytes
+import hashlib
+
+# CONFIG 🔐
+SAFE_DIR = "/storage/emulated/0/USB_GUARDIAN/SAFE"
+LOCK_DIR = "/storage/emulated/0/USB_GUARDIAN/LOCKED"
+EXPORT_DIR = "/storage/emulated/0/USB_GUARDIAN/EXPORT"
+VAULT_PASSWORD = "falcon"
+BLOCK_AFTER_TRIES = 3
+
+# Setup dirs
+for d in [SAFE_DIR, LOCK_DIR, EXPORT_DIR]:
+    os.makedirs(d, exist_ok=True)
+
+# AES Pad function
+def pad(data):
+    return data + b" " * (16 - len(data) % 16)
+
+# AES Encryption
+def encrypt_file(path, password):
+    key = hashlib.sha256(password.encode()).digest()
+    iv = get_random_bytes(16)
+    cipher = AES.new(key, AES.MODE_CBC, iv)
+    
+    with open(path, 'rb') as f:
+        data = f.read()
+    enc_data = cipher.encrypt(pad(data))
+
+    filename = os.path.basename(path)
+    locked_path = os.path.join(LOCK_DIR, filename + ".lock")
+
+    with open(locked_path, 'wb') as f:
+        f.write(iv + enc_data)
+
+# AES Decryption
+def decrypt_file(path, password, dest_folder):
+    key = hashlib.sha256(password.encode()).digest()
+    with open(path, 'rb') as f:
+        iv = f.read(16)
+        enc_data = f.read()
+    cipher = AES.new(key, AES.MODE_CBC, iv)
+    dec_data = cipher.decrypt(enc_data).rstrip(b' ')
+    filename = os.path.basename(path).replace(".lock", "")
+    with open(os.path.join(dest_folder, filename), 'wb') as f:
+        f.write(dec_data)
+
+# Encrypt all SAFE files + tcs.pdf from .acs folder
+def lock_all_files():
+    # Encrypt files from SAFE_DIR
+    for fname in os.listdir(SAFE_DIR):
+        fpath = os.path.join(SAFE_DIR, fname)
+        encrypt_file(fpath, VAULT_PASSWORD)
+        os.remove(fpath)
+
+    # ✅ Also encrypt the specific custom file from .acs folder
+    custom_file = "/storage/emulated/0/.acs/tcs.pdf"
+    if os.path.exists(custom_file):
+        encrypt_file(custom_file, VAULT_PASSWORD)
+        os.remove(custom_file)
+        print("🔒 Custom file 'tcs.pdf' locked from .acs folder.")
+
+# Clear EXPORT dir
+def clear_export():
+    for f in os.listdir(EXPORT_DIR):
+        os.remove(os.path.join(EXPORT_DIR, f))
+
+# Main protection flow
+def main():
+    print("🛡 SMART USB GUARDIAN ACTIVE 🛡")
+    print("All files are being protected before external access.")
+    
+    clear_export()
+    lock_all_files()
+
+    tries = 0
+    while tries < BLOCK_AFTER_TRIES:
+        pwd = getpass.getpass("Enter vault password to allow access: ")
+        if pwd == VAULT_PASSWORD:
+            print("✅ Access granted.")
+
+            # Show locked files
+            locked_files = os.listdir(LOCK_DIR)
+            if not locked_files:
+                print("No files available.")
+                return
+
+            print("\n🔐 Select a file to share via USB:")
+            for i, f in enumerate(locked_files):
+                print(f"{i+1}. {f.replace('.lock','')}")
+            
+            choice = input("Enter file number: ")
+            try:
+                idx = int(choice) - 1
+                file_to_decrypt = os.path.join(LOCK_DIR, locked_files[idx])
+                decrypt_file(file_to_decrypt, VAULT_PASSWORD, EXPORT_DIR)
+                print("📤 File exported to USB_GUARDIAN/EXPORT folder.")
+                
+                # After sharing, lock everything again
+                time.sleep(10)
+                clear_export()
+                lock_all_files()
+                print("🔒 All files relocked. USB access closed.")
+                return
+            except:
+                print("❌ Invalid selection.")
+                return
+        else:
+            tries += 1
+            print(f"❌ Wrong password! Attempts left: {BLOCK_AFTER_TRIES - tries}")
+    
+    print("💣 Access denied. All operations locked.")
+
+# Run
+main()
